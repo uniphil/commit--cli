@@ -198,6 +198,7 @@ dependencies = [
 name = "commit--blog"
 version = "0.1.0"
 dependencies = [
+ "httparse",
  "keyring",
  "oauth2",
  "structopt",

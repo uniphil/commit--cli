@@ -1,8 +1,12 @@
 // lkajslfkj not sure how to activate this only for the *crate name*
 #![allow(non_snake_case)]
 
+use std::borrow::Cow;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::io;
 use structopt::StructOpt;
+use httparse::{EMPTY_HEADER, Request, Result as HttpResult, Error::TooManyHeaders};
 use keyring::{Entry, Error as KeyringError};
 use oauth2::{
     AuthorizationCode,
@@ -12,7 +16,8 @@ use oauth2::{
     PkceCodeChallenge,
     RedirectUrl,
     Scope,
-    TokenUrl
+    TokenUrl,
+    url::Url,
 };
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::http_client;
@@ -37,6 +42,96 @@ enum Blog {
     },
 }
 
+const HOST: &str = "localhost";
+const PORT: u32 = 8000;
+
+fn listen_for_things() -> (String, String) {
+    // terrible terrible hacky lil local http server
+    let listener = TcpListener::bind(&format!("{}:{}", HOST, PORT)).unwrap();
+    for s in listener.incoming() {
+        let mut stream = s.unwrap();
+        let mut buffer = [0; 1024];
+        stream.read(&mut buffer).unwrap();
+
+        let mut req = Request::new(&mut [EMPTY_HEADER; 0]);
+
+        'parse: loop {
+            match req.parse(&buffer) {
+                HttpResult::Err(TooManyHeaders) => {},
+                _ => break 'parse,
+            };
+            if req.method != Some("GET") {
+                eprintln!("ignoring non-GET request {:?}", req);
+                break 'parse
+            }
+            let path = match req.path {
+                Some(p) if p.starts_with("/oauth/authorized") => p,
+                p => {
+                    eprintln!("ignoring request at {:?}", p);
+                    break 'parse
+                },
+            };
+            println!("got a paaaath {:?}", path);
+            let url = match Url::parse("http://x.y").unwrap().join(path) {
+                Ok(u) => u,
+                Err(e) => {
+                    eprintln!("could not parse path at GET {:?}: {:?}", path, e);
+                    break 'parse
+                }
+            };
+            println!("u {:?}", url);
+            let (mut code, mut state) = (None, None);
+            println!("iterating paths...");
+            for (ref k, ref v) in url.query_pairs() {
+                match k {
+                    Cow::Borrowed("code") => { code = Some(v.to_string()) },
+                    Cow::Borrowed("state") => { state = Some(v.to_string()) },
+                    _ => {},
+                }
+                println!("kv: {:?}, {:?}", k, v);
+            }
+            match (&code, &state) {
+                (Some(c), Some(s)) => {
+                    return (c.to_owned(), s.to_owned())
+                    // println!("yeee {:?} {:?}", c, s);
+                },
+                _ => {
+                    eprintln!("could not find all params in query: code={:?} state={:?}", code, state);
+                    break 'parse
+                }
+            }
+
+            break 'parse
+            // return
+            // let response = "HTTP/1.1 200 OK\r\n\r\n";
+            // stream.write(response.as_bytes()).unwrap()
+        }
+
+            // (HttpResult::Err(TooManyHeaders), Some("GET"), Some(path)) => {
+            //     if !path.starts_with("/oauth/authorized") {
+            //         eprintln!("ignoring GET request at {:?}", path);
+
+            //         let response = "HTTP/1.1 200 OK\r\n\r\n";
+            //         stream.write(response.as_bytes()).unwrap()
+            //         continue
+            //     }
+            //     path
+            // },
+            // _ => {
+            //     eprintln!("ignoring request {:?}", req);
+            //     continue
+            // },
+        // let status = req.parse(&buffer);
+        // println!("stat: {:?}", status);
+        // println!("req: {:?}", req);
+
+        let response = "HTTP/1.1 200 OK\r\n\r\n";
+        stream.write(response.as_bytes()).unwrap();
+        stream.flush().unwrap();
+    }
+    unreachable!()
+}
+
 fn oauth() {
 
     let client =
@@ -46,12 +141,11 @@ fn oauth() {
             AuthUrl::new("http://localhost:5000/oauth/auth".to_string()).expect("auth url"),
             Some(TokenUrl::new("http://localhost:5000/oauth/token".to_string()).expect("token url"))
         )
-        // Set the URL the user will be redirected to after the authorization process.
-        .set_redirect_uri(RedirectUrl::new("http://localhost:8000".to_string()).expect("redirect url"));
+        .set_redirect_uri(RedirectUrl::new(format!("http://{}:{}/oauth/authorized", HOST, PORT).to_string()).expect("redirect url"));
 
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
-    let (auth_url, _csrf_token) = client
+    let (auth_url, csrf_token) = client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new("blog".to_string()))
         .set_pkce_challenge(pkce_challenge)
@@ -59,16 +153,31 @@ fn oauth() {
 
     println!("Browse to: {}", auth_url);
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).expect("error: unable to read user input");
+    println!("waiting....");
+    let (code, state) = listen_for_things();
+
+    assert_eq!(&state, csrf_token.secret(), "csrf check");
+    // if &state != csrf_token.secret() {
+    //     eprinl
+    // }
+
+    // let mut input = String::new();
+    // io::stdin().read_line(&mut input).expect("error: unable to read user input");
+
+    println!("trying to auth with code: {:?}", code);
 
     let token_result =
         client
-            .exchange_code(AuthorizationCode::new(input))
+            .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(pkce_verifier)
-            .request(http_client).expect("token");
+            .add_extra_param("client_id", "commit--cli")  // ??? seems like this isn't sending??
+            .request(http_client);
 
     println!("token_result {:?}", token_result);
+
+    let tok = token_result.expect("token");
+
+    println!("token_result {:?}", tok);
 
 }
 
