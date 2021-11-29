@@ -5,4 +5,5 @@ edition = "2021"
 
 [dependencies]
 keyring = { git = "https://github.com/hwchen/keyring-rs", tag = "v1.0.0rc1" }
+oauth2 = "4.1"
 structopt = "0.3"
