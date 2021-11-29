@@ -4,7 +4,6 @@
 use std::borrow::Cow;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::io;
 use structopt::StructOpt;
 use httparse::{EMPTY_HEADER, Request, Result as HttpResult, Error::TooManyHeaders};
 use keyring::{Entry, Error as KeyringError};
@@ -71,7 +70,6 @@ fn listen_for_things() -> (String, String) {
                     break 'parse
                 },
             };
-            println!("got a paaaath {:?}", path);
             let url = match Url::parse("http://x.y").unwrap().join(path) {
                 Ok(u) => u,
                 Err(e) => {
@@ -79,51 +77,28 @@ fn listen_for_things() -> (String, String) {
                     break 'parse
                 }
             };
-            println!("u {:?}", url);
             let (mut code, mut state) = (None, None);
-            println!("iterating paths...");
             for (ref k, ref v) in url.query_pairs() {
                 match k {
                     Cow::Borrowed("code") => { code = Some(v.to_string()) },
                     Cow::Borrowed("state") => { state = Some(v.to_string()) },
                     _ => {},
                 }
-                println!("kv: {:?}, {:?}", k, v);
             }
             match (&code, &state) {
                 (Some(c), Some(s)) => {
+                    let page = include_str!("authorized.html");
+                    let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", page.len(), page);
+                    stream.write(response.as_bytes()).unwrap();
+                    stream.flush().unwrap();
                     return (c.to_owned(), s.to_owned())
-                    // println!("yeee {:?} {:?}", c, s);
                 },
                 _ => {
                     eprintln!("could not find all params in query: code={:?} state={:?}", code, state);
                     break 'parse
                 }
             }
-
-            break 'parse
-            // return
-            // let response = "HTTP/1.1 200 OK\r\n\r\n";
-            // stream.write(response.as_bytes()).unwrap()
         }
-
-            // (HttpResult::Err(TooManyHeaders), Some("GET"), Some(path)) => {
-            //     if !path.starts_with("/oauth/authorized") {
-            //         eprintln!("ignoring GET request at {:?}", path);
-
-            //         let response = "HTTP/1.1 200 OK\r\n\r\n";
-            //         stream.write(response.as_bytes()).unwrap()
-            //         continue
-            //     }
-            //     path
-            // },
-            // _ => {
-            //     eprintln!("ignoring request {:?}", req);
-            //     continue
-            // },
-        // let status = req.parse(&buffer);
-        // println!("stat: {:?}", status);
-        // println!("req: {:?}", req);
 
         let response = "HTTP/1.1 200 OK\r\n\r\n";
         stream.write(response.as_bytes()).unwrap();
@@ -157,14 +132,6 @@ fn oauth() {
     let (code, state) = listen_for_things();
 
     assert_eq!(&state, csrf_token.secret(), "csrf check");
-    // if &state != csrf_token.secret() {
-    //     eprinl
-    // }
-
-    // let mut input = String::new();
-    // io::stdin().read_line(&mut input).expect("error: unable to read user input");
-
-    println!("trying to auth with code: {:?}", code);
 
     let token_result =
         client
@@ -172,9 +139,6 @@ fn oauth() {
             .set_pkce_verifier(pkce_verifier)
             .add_extra_param("client_id", "commit--cli")  // ??? seems like this isn't sending??
             .request(http_client);
-
-    println!("token_result {:?}", token_result);
-
     let tok = token_result.expect("token");
 
     println!("token_result {:?}", tok);
