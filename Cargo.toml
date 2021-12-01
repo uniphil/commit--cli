@@ -8,3 +8,4 @@ httparse = "1.5"
 keyring = { git = "https://github.com/hwchen/keyring-rs", tag = "v1.0.0rc1" }
 oauth2 = "4.1"
 structopt = "0.3"
+webbrowser = "0.5"

@@ -20,6 +20,7 @@ use oauth2::{
 };
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::http_client;
+use webbrowser;
 
 
 #[derive(Debug, StructOpt)]
@@ -42,11 +43,10 @@ enum Blog {
 }
 
 const HOST: &str = "localhost";
-const PORT: u32 = 8000;
+const PORT: u32 = 33205;
 
-fn listen_for_things() -> (String, String) {
+fn listen_for_things(listener: TcpListener) -> (String, String) {
     // terrible terrible hacky lil local http server
-    let listener = TcpListener::bind(&format!("{}:{}", HOST, PORT)).unwrap();
     for s in listener.incoming() {
         let mut stream = s.unwrap();
         let mut buffer = [0; 1024];
@@ -108,6 +108,9 @@ fn listen_for_things() -> (String, String) {
 }
 
 fn oauth() {
+    // bind early so we can bail if the port is not available
+    let listener = TcpListener::bind(&format!("{}:{}", HOST, PORT))
+        .expect(&format!("Could not bind to port {} for oauth redirect listener", PORT));
 
     let client =
         BasicClient::new(
@@ -126,10 +129,14 @@ fn oauth() {
         .set_pkce_challenge(pkce_challenge)
         .url();
 
-    println!("Browse to: {}", auth_url);
+    println!("\nAuth URL ready: {}\n\nLaunching browser...", auth_url);
+    match webbrowser::open(auth_url.as_str()) {
+        Ok(_) => println!("Launched! Please complete the authorization in browser :)"),
+        Err(e) => println!("Could not launch browser: {:?}\nVisit the URL above to complete authorization.", e),
+    }
 
-    println!("waiting....");
-    let (code, state) = listen_for_things();
+    println!("waiting for auth redirect...");
+    let (code, state) = listen_for_things(listener);
 
     assert_eq!(&state, csrf_token.secret(), "csrf check");
 
