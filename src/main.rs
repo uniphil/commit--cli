@@ -1,20 +1,28 @@
 // lkajslfkj not sure how to activate this only for the *crate name*
 #![allow(non_snake_case)]
 
+use serde::{Deserialize, Serialize};
+
 use std::borrow::Cow;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::time::{Duration, SystemTime};
 use structopt::StructOpt;
 use httparse::{EMPTY_HEADER, Request, Result as HttpResult, Error::TooManyHeaders};
-use keyring::{Entry, Error as KeyringError};
+use keyring::Entry;
 use oauth2::{
+    AccessToken,
     AuthorizationCode,
     AuthUrl,
+    basic::BasicTokenType,
     ClientId,
     CsrfToken,
+    EmptyExtraTokenFields,
     PkceCodeChallenge,
     RedirectUrl,
     Scope,
+    StandardTokenResponse,
+    TokenResponse,
     TokenUrl,
     url::Url,
 };
@@ -42,8 +50,36 @@ enum Blog {
     },
 }
 
+const TOKEN_STORE_VERSION: &str = "0.1";
 const HOST: &str = "localhost";
 const PORT: u32 = 33205;
+
+
+fn now() -> Duration {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("now is after unix epoch")
+}
+
+
+#[derive(Serialize, Deserialize, Debug)]
+struct StoredToken {
+    v: String,
+    access: AccessToken, // access token
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires: Option<u64>, // timestamp
+}
+
+impl StoredToken {
+    fn from_token_response(token: StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>) -> StoredToken {
+        StoredToken {
+            v: TOKEN_STORE_VERSION.to_string(),
+            access: token.access_token().to_owned(),
+            expires: token.expires_in().map(|dt| (now() + dt).as_secs())
+        }
+    }
+}
+
 
 fn listen_for_things(listener: TcpListener) -> (String, String) {
     // terrible terrible hacky lil local http server
@@ -107,7 +143,7 @@ fn listen_for_things(listener: TcpListener) -> (String, String) {
     unreachable!()
 }
 
-fn oauth() {
+fn oauth() -> StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType> {
     // bind early so we can bail if the port is not available
     let listener = TcpListener::bind(&format!("{}:{}", HOST, PORT))
         .expect(&format!("Could not bind to port {} for oauth redirect listener", PORT));
@@ -149,26 +185,33 @@ fn oauth() {
     let tok = token_result.expect("token");
 
     println!("token_result {:?}", tok);
-
+    tok
 }
 
 fn main() {
     match Blog::from_args() {
         Blog::Login => {
-            oauth();
-
-            let entry = Entry::new("commit--blog", "local");
-            match entry.get_password() {
-                Ok(token) => println!("yaaaaa: {:?}", token),
-                Err(KeyringError::NoEntry) => match entry.set_password("abczzz") {
+            let entry = Entry::new("commit--blog", "auth");
+            if let Ok(json_token) = entry.get_password() {
+                let stored: StoredToken = serde_json::from_str(&json_token).expect("parses existing token");
+                println!("tok: {:?}", stored);
+                if let Some(exp) = stored.expires {
+                    if now().as_secs() >= exp {
+                        println!("oh no, access token might be expired");
+                    }
+                }
+            } else {
+                let token = oauth();
+                let storable = StoredToken::from_token_response(token);
+                let j = serde_json::to_string(&storable).expect("jsonify");
+                match entry.set_password(&j) {
                     Ok(()) => println!("ya, new set"),
                     Err(err) => eprintln!("naaa setting: {:?}", err),
-                },
-                Err(err) => eprintln!("naaa: {:?}", err)
+                }
             }
         },
         Blog::Logout => {
-            let entry = Entry::new("commit--blog", "local");
+            let entry = Entry::new("commit--blog", "auth");
             match entry.delete_password() {
                 Ok(()) => println!("ok password deleted"),
                 Err(err) => eprintln!("error deleting pw: {:?}", err),

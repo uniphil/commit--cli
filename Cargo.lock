@@ -201,6 +201,8 @@ dependencies = [
  "httparse",
  "keyring",
  "oauth2",
+ "serde",
+ "serde_json",
  "structopt",
  "webbrowser",
 ]
