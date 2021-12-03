@@ -22,6 +22,28 @@ h3 {
 <body>
   <div class="message">
     <h3>Authorized</h3>
-    <p>You may now close this window and return to the terminal to complete the login process.</p>
+    <p>Exchanging auth token for access token<span class="dots">.</span></p>
+    <p class="status">&nbsp;</p>
   </div>
+  <script type="text/javascript">
+    var done = (dotsEl => {
+      const another = () => dotsEl.textContent += '.';
+      const timer = setInterval(another, 500);
+      return () => clearInterval(timer);
+    })(document.querySelector('.dots'));
+
+    var statusEl = document.querySelector('.status');
+    fetch('/token-status')
+      .then(
+        response => {
+          statusEl.textContent = response.ok
+            ? "Success!"
+            : "Hmm, Looks like something went wrong in the exchange.";
+        },
+        error => {
+          console.error({ error });
+          statusEl.textContent = "Something went wrong while waiting. Check the terminal.";
+        })
+      .then(done);
+  </script>
 </body>

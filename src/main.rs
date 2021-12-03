@@ -85,8 +85,8 @@ impl StoredToken {
 }
 
 
-fn just_ok(stream: &mut TcpStream) {
-    let response = "HTTP/1.1 200 OK\r\n\r\n";
+fn not_found(stream: &mut TcpStream) {
+    let response = "HTTP/1.1 404 NOT FOUND\r\n\r\n";
     stream.write_all(response.as_bytes()).unwrap();
     stream.flush().unwrap();
 }
@@ -100,13 +100,10 @@ enum Heard<T> {
 
 
 fn handle_auth_redirect(req: Request) -> Heard<(String, String)> {
-    if req.method != Some("GET") {
-        return Heard::Ohno(format!("Ignoring non-GET request method: {:?}", req.method))
-    }
-    let path = match req.path {
-        Some(p) if p.starts_with("/oauth/authorized") => p,
-        p => {
-            return Heard::Ohno(format!("Ignoring unexpected request path at {:?}", p))
+    let path = match (req.method, req.path) {
+        (Some("GET"), Some(p)) if p.starts_with("/oauth/authorized") => p,
+        (m, p) => {
+            return Heard::Ohno(format!("Ignoring unexpected request: {:?} {:?}", m, p))
         },
     };
     let url = match Url::parse("http://x.y").unwrap().join(path) {
@@ -129,8 +126,16 @@ fn handle_auth_redirect(req: Request) -> Heard<(String, String)> {
     }
 }
 
+fn handle_token_followup(req: Request) -> Heard<()> {
+    match (req.method, req.path) {
+        (Some("GET"), Some("/token-status")) => Heard::Ya(()),
+        (m, p) => Heard::Ohno(format!("Ignoring unexpected request: {:?} {:?}", m, p))
+    }
+}
 
-fn listen_for_redirect(listener: TcpListener) -> Result<(String, String), Error> {
+
+fn listen_for<T, F>(handler: F, status: &str, response: String, listener: &TcpListener) -> Result<T, Error>
+    where F: Fn(Request) -> Heard<T> {
     // terrible terrible hacky lil local http server
     for s in listener.incoming() {
         let mut stream = s.unwrap();
@@ -140,24 +145,25 @@ fn listen_for_redirect(listener: TcpListener) -> Result<(String, String), Error>
         let mut req = Request::new(&mut [EMPTY_HEADER; 0]);
 
         match req.parse(&buffer) {
-            HttpResult::Err(TooManyHeaders) => {},
-            _ => {
-                just_ok(&mut stream);
+            HttpResult::Ok(_) => {},
+            HttpResult::Err(TooManyHeaders) => {}, // we allocated zero headers, so this is expected
+            HttpResult::Err(e) => {
+                eprintln!("Ignoring request that could not be parsed: {:?}", e);
+                not_found(&mut stream);
                 continue
             },
         };
 
-        match handle_auth_redirect(req) {
-            Heard::Ya(codes) => {
-                let page = include_str!("authorized.html");
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", page.len(), page);
-                stream.write_all(response.as_bytes()).unwrap();
+        match handler(req) {
+            Heard::Ya(stuff) => {
+                let resp = format!("HTTP/1.1 {}\r\nContent-Length: {}\r\n\r\n{}", status, response.len(), response);
+                stream.write_all(resp.as_bytes()).unwrap();
                 stream.flush().unwrap();
-                return Ok(codes)
+                return Ok(stuff)
             },
             Heard::Ohno(msg) => {
                 eprintln!("{}", msg);
-                just_ok(&mut stream);
+                not_found(&mut stream);
             },
         }
     }
@@ -193,7 +199,7 @@ fn oauth() -> StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType> {
     }
 
     println!("waiting for auth redirect...");
-    let (code, state) = listen_for_redirect(listener).unwrap();
+    let (code, state) = listen_for(handle_auth_redirect, "200 OK", include_str!("authorized.html").to_string(), &listener).unwrap();
 
     assert_eq!(&state, csrf_token.secret(), "csrf check");
 
@@ -203,10 +209,17 @@ fn oauth() -> StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType> {
             .set_pkce_verifier(pkce_verifier)
             .add_extra_param("client_id", "commit--cli")  // ??? seems like this isn't sending??
             .request(http_client);
-    let tok = token_result.expect("token");
 
-    println!("token_result {:?}", tok);
-    tok
+    match token_result {
+        Ok(tok) => {
+            listen_for(handle_token_followup, "200 OK", "got token".to_string(), &listener).unwrap();
+            tok
+        },
+        Err(e) => {
+            eprintln!("could not get token: {:?}", e);
+            panic!("token")
+        },
+    }
 }
 
 fn main() {
