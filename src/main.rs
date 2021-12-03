@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use std::borrow::Cow;
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, SystemTime};
 use structopt::StructOpt;
 use httparse::{EMPTY_HEADER, Request, Result as HttpResult, Error::TooManyHeaders};
@@ -28,7 +28,6 @@ use oauth2::{
 };
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::http_client;
-use webbrowser;
 
 
 #[derive(Debug, StructOpt)]
@@ -81,64 +80,72 @@ impl StoredToken {
 }
 
 
+fn just_ok(stream: &mut TcpStream) {
+    let response = "HTTP/1.1 200 OK\r\n\r\n";
+    stream.write_all(response.as_bytes()).unwrap();
+    stream.flush().unwrap();
+}
+
+
 fn listen_for_things(listener: TcpListener) -> (String, String) {
     // terrible terrible hacky lil local http server
     for s in listener.incoming() {
         let mut stream = s.unwrap();
         let mut buffer = [0; 1024];
-        stream.read(&mut buffer).unwrap();
+        stream.read_exact(&mut buffer).unwrap();
 
         let mut req = Request::new(&mut [EMPTY_HEADER; 0]);
 
-        'parse: loop {
-            match req.parse(&buffer) {
-                HttpResult::Err(TooManyHeaders) => {},
-                _ => break 'parse,
-            };
-            if req.method != Some("GET") {
-                eprintln!("ignoring non-GET request {:?}", req);
-                break 'parse
+        match req.parse(&buffer) {
+            HttpResult::Err(TooManyHeaders) => {},
+            _ => {
+                just_ok(&mut stream);
+                continue
+            },
+        };
+        if req.method != Some("GET") {
+            eprintln!("ignoring non-GET request {:?}", req);
+            just_ok(&mut stream);
+            continue
+        }
+        let path = match req.path {
+            Some(p) if p.starts_with("/oauth/authorized") => p,
+            p => {
+                eprintln!("ignoring request at {:?}", p);
+                just_ok(&mut stream);
+                continue
+            },
+        };
+        let url = match Url::parse("http://x.y").unwrap().join(path) {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("could not parse path at GET {:?}: {:?}", path, e);
+                just_ok(&mut stream);
+                continue
             }
-            let path = match req.path {
-                Some(p) if p.starts_with("/oauth/authorized") => p,
-                p => {
-                    eprintln!("ignoring request at {:?}", p);
-                    break 'parse
-                },
-            };
-            let url = match Url::parse("http://x.y").unwrap().join(path) {
-                Ok(u) => u,
-                Err(e) => {
-                    eprintln!("could not parse path at GET {:?}: {:?}", path, e);
-                    break 'parse
-                }
-            };
-            let (mut code, mut state) = (None, None);
-            for (ref k, ref v) in url.query_pairs() {
-                match k {
-                    Cow::Borrowed("code") => { code = Some(v.to_string()) },
-                    Cow::Borrowed("state") => { state = Some(v.to_string()) },
-                    _ => {},
-                }
-            }
-            match (&code, &state) {
-                (Some(c), Some(s)) => {
-                    let page = include_str!("authorized.html");
-                    let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", page.len(), page);
-                    stream.write(response.as_bytes()).unwrap();
-                    stream.flush().unwrap();
-                    return (c.to_owned(), s.to_owned())
-                },
-                _ => {
-                    eprintln!("could not find all params in query: code={:?} state={:?}", code, state);
-                    break 'parse
-                }
+        };
+        let (mut code, mut state) = (None, None);
+        for (ref k, ref v) in url.query_pairs() {
+            match k {
+                Cow::Borrowed("code") => { code = Some(v.to_string()) },
+                Cow::Borrowed("state") => { state = Some(v.to_string()) },
+                _ => {},
             }
         }
-
-        let response = "HTTP/1.1 200 OK\r\n\r\n";
-        stream.write(response.as_bytes()).unwrap();
-        stream.flush().unwrap();
+        match (&code, &state) {
+            (Some(c), Some(s)) => {
+                let page = include_str!("authorized.html");
+                let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", page.len(), page);
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                return (c.to_owned(), s.to_owned())
+            },
+            _ => {
+                eprintln!("could not find all params in query: code={:?} state={:?}", code, state);
+                just_ok(&mut stream);
+                continue
+            }
+        }
     }
     unreachable!()
 }
@@ -146,7 +153,7 @@ fn listen_for_things(listener: TcpListener) -> (String, String) {
 fn oauth() -> StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType> {
     // bind early so we can bail if the port is not available
     let listener = TcpListener::bind(&format!("{}:{}", HOST, PORT))
-        .expect(&format!("Could not bind to port {} for oauth redirect listener", PORT));
+        .unwrap_or_else(|e| panic!("Could not bind to port {} for oauth redirect listener: {:?}", PORT, e));
 
     let client =
         BasicClient::new(
@@ -155,7 +162,7 @@ fn oauth() -> StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType> {
             AuthUrl::new("http://localhost:5000/oauth/auth".to_string()).expect("auth url"),
             Some(TokenUrl::new("http://localhost:5000/oauth/token".to_string()).expect("token url"))
         )
-        .set_redirect_uri(RedirectUrl::new(format!("http://{}:{}/oauth/authorized", HOST, PORT).to_string()).expect("redirect url"));
+        .set_redirect_uri(RedirectUrl::new(format!("http://{}:{}/oauth/authorized", HOST, PORT)).expect("redirect url"));
 
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
