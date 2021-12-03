@@ -30,6 +30,11 @@ use oauth2::basic::BasicClient;
 use oauth2::reqwest::http_client;
 
 
+#[derive(Debug)]
+struct Error {
+}
+
+
 #[derive(Debug, StructOpt)]
 #[structopt(name = "commit--blog")]
 enum Blog {
@@ -87,7 +92,45 @@ fn just_ok(stream: &mut TcpStream) {
 }
 
 
-fn listen_for_things(listener: TcpListener) -> (String, String) {
+#[derive(Debug)]
+enum Heard<T> {
+    Ya(T),
+    Ohno(String),
+}
+
+
+fn handle_auth_redirect(req: Request) -> Heard<(String, String)> {
+    if req.method != Some("GET") {
+        return Heard::Ohno(format!("Ignoring non-GET request method: {:?}", req.method))
+    }
+    let path = match req.path {
+        Some(p) if p.starts_with("/oauth/authorized") => p,
+        p => {
+            return Heard::Ohno(format!("Ignoring unexpected request path at {:?}", p))
+        },
+    };
+    let url = match Url::parse("http://x.y").unwrap().join(path) {
+        Ok(u) => u,
+        Err(e) => {
+            return Heard::Ohno(format!("could not parse path at GET {:?}: {:?}", path, e))
+        }
+    };
+    let (mut code, mut state) = (None, None);
+    for (ref k, ref v) in url.query_pairs() {
+        match k {
+            Cow::Borrowed("code") => { code = Some(v.to_string()) },
+            Cow::Borrowed("state") => { state = Some(v.to_string()) },
+            _ => {},
+        }
+    }
+    match (&code, &state) {
+        (Some(c), Some(s)) => Heard::Ya((c.to_owned(), s.to_owned())),
+        _ => Heard::Ohno(format!("could not find all params in query: code={:?} state={:?}", code, state)),
+    }
+}
+
+
+fn listen_for_redirect(listener: TcpListener) -> Result<(String, String), Error> {
     // terrible terrible hacky lil local http server
     for s in listener.incoming() {
         let mut stream = s.unwrap();
@@ -103,48 +146,19 @@ fn listen_for_things(listener: TcpListener) -> (String, String) {
                 continue
             },
         };
-        if req.method != Some("GET") {
-            eprintln!("ignoring non-GET request {:?}", req);
-            just_ok(&mut stream);
-            continue
-        }
-        let path = match req.path {
-            Some(p) if p.starts_with("/oauth/authorized") => p,
-            p => {
-                eprintln!("ignoring request at {:?}", p);
-                just_ok(&mut stream);
-                continue
-            },
-        };
-        let url = match Url::parse("http://x.y").unwrap().join(path) {
-            Ok(u) => u,
-            Err(e) => {
-                eprintln!("could not parse path at GET {:?}: {:?}", path, e);
-                just_ok(&mut stream);
-                continue
-            }
-        };
-        let (mut code, mut state) = (None, None);
-        for (ref k, ref v) in url.query_pairs() {
-            match k {
-                Cow::Borrowed("code") => { code = Some(v.to_string()) },
-                Cow::Borrowed("state") => { state = Some(v.to_string()) },
-                _ => {},
-            }
-        }
-        match (&code, &state) {
-            (Some(c), Some(s)) => {
+
+        match handle_auth_redirect(req) {
+            Heard::Ya(codes) => {
                 let page = include_str!("authorized.html");
                 let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", page.len(), page);
                 stream.write_all(response.as_bytes()).unwrap();
                 stream.flush().unwrap();
-                return (c.to_owned(), s.to_owned())
+                return Ok(codes)
             },
-            _ => {
-                eprintln!("could not find all params in query: code={:?} state={:?}", code, state);
+            Heard::Ohno(msg) => {
+                eprintln!("{}", msg);
                 just_ok(&mut stream);
-                continue
-            }
+            },
         }
     }
     unreachable!()
@@ -179,7 +193,7 @@ fn oauth() -> StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType> {
     }
 
     println!("waiting for auth redirect...");
-    let (code, state) = listen_for_things(listener);
+    let (code, state) = listen_for_redirect(listener).unwrap();
 
     assert_eq!(&state, csrf_token.secret(), "csrf check");
 
