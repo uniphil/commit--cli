@@ -1,9 +1,10 @@
 // lkajslfkj not sure how to activate this only for the *crate name*
 #![allow(non_snake_case)]
 
+use git2::Repository;
 use serde::{Deserialize, Serialize};
-
 use std::borrow::Cow;
+use std::env;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, SystemTime};
@@ -250,7 +251,31 @@ fn main() {
                 Ok(()) => println!("ok password deleted"),
                 Err(err) => eprintln!("error deleting pw: {:?}", err),
             }
-        }
-        _ => unimplemented!()
+        },
+        Blog::Post { git_ref } => {
+            let repo = match Repository::discover(env::current_dir().unwrap()) {
+                Ok(repo) => {
+                    println!("sweet, repo state: {:?}", repo.state());
+                    repo
+                },
+                Err(e) => {
+                    panic!("booo. error opening current git repo: {:?}", e);
+                },
+            };
+            let obj = repo.revparse_single(&git_ref.unwrap_or("HEAD".to_string())).expect("to find the git fref");
+            println!("found obj: {:?}", obj);
+            for remote in repo.remotes().unwrap().iter() {
+                println!("found remote: {:?}", remote);
+                let details = repo.find_remote(remote.unwrap()).unwrap();
+                println!("\tremote details: {:?}", details.url());
+            }
+            println!("remotename {:?}", repo.branch_upstream_name("refs/heads/main").unwrap().as_str());
+            // eprintln!("todo: command for post. git ref: {:?}", git_ref);
+            unimplemented!()
+        },
+        Blog::Unpost { git_ref } => {
+            eprintln!("todo: command for unpost. git ref: {:?}", git_ref);
+            unimplemented!()
+        },
     }
 }

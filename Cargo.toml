@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+git2 = "0.13"
 httparse = "1.5"
 keyring = { git = "https://github.com/hwchen/keyring-rs", tag = "v1.0.0rc1" }
 oauth2 = "4.1"

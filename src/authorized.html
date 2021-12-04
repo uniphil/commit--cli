@@ -28,7 +28,7 @@ h3 {
   <script type="text/javascript">
     var done = (dotsEl => {
       const another = () => dotsEl.textContent += '.';
-      const timer = setInterval(another, 500);
+      const timer = setInterval(another, 300);
       return () => clearInterval(timer);
     })(document.querySelector('.dots'));
 
