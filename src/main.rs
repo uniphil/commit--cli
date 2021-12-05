@@ -1,7 +1,7 @@
 // lkajslfkj not sure how to activate this only for the *crate name*
 #![allow(non_snake_case)]
 
-use git2::Repository;
+use git2::{Commit, Repository};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::env;
@@ -10,7 +10,7 @@ use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, SystemTime};
 use structopt::StructOpt;
 use httparse::{EMPTY_HEADER, Request, Result as HttpResult, Error::TooManyHeaders};
-use keyring::Entry;
+use keyring::{Entry, Error as KeyringError};
 use oauth2::{
     AccessToken,
     AuthorizationCode,
@@ -29,6 +29,7 @@ use oauth2::{
 };
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::http_client;
+use reqwest::{StatusCode, header};
 
 
 #[derive(Debug)]
@@ -84,6 +85,26 @@ impl StoredToken {
         }
     }
 }
+
+
+#[derive(Debug, Serialize)]
+enum GitOrigin {
+    Github {
+        repo: String,
+    },
+}
+
+
+impl GitOrigin {
+    fn parse(remote: &str) -> Result<GitOrigin, String> {
+        remote
+            .strip_prefix("git@github.com:")
+            .and_then(|r| r.strip_suffix(".git"))
+            .map(|repo| GitOrigin::Github { repo: repo.to_owned() })
+            .ok_or_else(|| format!("Could not parse remote \"{:?}\" to an origin (only github ssh is recognized currently)", remote))
+    }
+}
+
 
 
 fn not_found(stream: &mut TcpStream) {
@@ -208,7 +229,7 @@ fn oauth() -> StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType> {
         client
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(pkce_verifier)
-            .add_extra_param("client_id", "commit--cli")  // ??? seems like this isn't sending??
+            .add_extra_param("client_id", "commit--cli")  // ??? seems like this wasn't sending??
             .request(http_client);
 
     match token_result {
@@ -222,6 +243,41 @@ fn oauth() -> StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType> {
         },
     }
 }
+
+
+#[derive(Debug, Serialize)]
+struct PostPayload<'a> {
+    commit: &'a str,
+    origin: GitOrigin,
+}
+
+
+fn post(commit: Commit, origin: GitOrigin, token: StoredToken) {
+    use std::collections::HashMap;
+    println!("it was {:?} in the {:?} with the {:?}", commit, origin, token);
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client.post("http://localhost:5000/api/blog")
+        .header(header::USER_AGENT, "commit--cli hacky test version")
+        .bearer_auth(token.access.secret())
+        .json(&PostPayload { commit: &commit.id().to_string(), origin })
+        .send()
+        .expect("to send ok");
+
+    match resp.status() {
+        code if code.is_success() =>  {
+            let data = resp.json::<HashMap<String, String>>().unwrap();
+            println!("{:#?}", data);
+        },
+        StatusCode::BAD_REQUEST => {
+            eprintln!("Failed to post: {:?}", resp.text());
+        },
+        otherwise => {
+            panic!("Got unexpected non-success response status: {:?}", otherwise)
+        }
+    }
+}
+
 
 fn main() {
     match Blog::from_args() {
@@ -253,25 +309,34 @@ fn main() {
             }
         },
         Blog::Post { git_ref } => {
-            let repo = match Repository::discover(env::current_dir().unwrap()) {
-                Ok(repo) => {
-                    println!("sweet, repo state: {:?}", repo.state());
-                    repo
-                },
-                Err(e) => {
-                    panic!("booo. error opening current git repo: {:?}", e);
-                },
+            let entry = Entry::new("commit--blog", "auth");
+            let stored = match entry.get_password() {
+                Ok(s) => s,
+                Err(KeyringError::NoEntry) => panic!("commit--blog auth not found -- maybe log in first"),
+                Err(e) => panic!("{:?}", e),
             };
-            let obj = repo.revparse_single(&git_ref.unwrap_or("HEAD".to_string())).expect("to find the git fref");
-            println!("found obj: {:?}", obj);
-            for remote in repo.remotes().unwrap().iter() {
-                println!("found remote: {:?}", remote);
-                let details = repo.find_remote(remote.unwrap()).unwrap();
-                println!("\tremote details: {:?}", details.url());
+            let token: StoredToken = serde_json::from_str(&stored).expect("parse existing token");
+            if let Some(exp) = token.expires {
+                if now().as_secs() >= exp {
+                    panic!("oh no, access token might be expired");
+                }
             }
-            println!("remotename {:?}", repo.branch_upstream_name("refs/heads/main").unwrap().as_str());
-            // eprintln!("todo: command for post. git ref: {:?}", git_ref);
-            unimplemented!()
+
+            let repo = Repository::discover(env::current_dir().unwrap()).expect("open current repo");
+            let local_obj = repo.revparse_single(&git_ref.unwrap_or_else(|| "HEAD".to_string())).expect("to find the git fref");
+            let commit = local_obj.peel_to_commit().expect("ref resolves to a commit");
+            let mut origin = None;
+            for remote in repo.remotes().unwrap().iter() {
+                let details = repo.find_remote(remote.unwrap()).unwrap();
+                let url = details.url().unwrap();
+                match GitOrigin::parse(url) {
+                    Ok(o) => { origin = Some(o) },
+                    Err(err) => eprintln!("ignoring origin: {:?}", err),
+                }
+            }
+            let origin = origin.expect("origin to be found");
+
+            post(commit, origin, token);
         },
         Blog::Unpost { git_ref } => {
             eprintln!("todo: command for unpost. git ref: {:?}", git_ref);
