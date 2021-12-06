@@ -311,7 +311,7 @@ fn get_token(entry: Entry) -> StoredToken {
 
 
 fn get_commit(repo: &Repository, git_ref: Option<String>) -> Result<Commit, String> {
-    repo.revparse_single(&git_ref.unwrap_or_else(|| "@".to_string()))
+    repo.revparse_single(&git_ref.unwrap_or_else(|| "HEAD".to_string()))
         .and_then(|obj| obj.peel_to_commit())
         .map_err(|e| e.message().to_owned())
 }
