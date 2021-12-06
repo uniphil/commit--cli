@@ -4,6 +4,7 @@
 use git2::{Commit, Repository};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::env;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -56,9 +57,10 @@ enum Blog {
     },
 }
 
+const COMMIT_BLOG_HOST: &str = "http://localhost:5000";
 const TOKEN_STORE_VERSION: &str = "0.1";
-const HOST: &str = "localhost";
-const PORT: u32 = 33205;
+const LOCAL_AUTH_HOST: &str = "localhost";
+const LOCAL_AUTH_PORT: u32 = 33205;
 
 
 fn now() -> Duration {
@@ -84,11 +86,20 @@ impl StoredToken {
             expires: token.expires_in().map(|dt| (now() + dt).as_secs())
         }
     }
+    fn to_bearer(&self) -> &String {
+        if let Some(exp) = self.expires {
+            if now().as_secs() >= exp {
+                eprintln!("Access token has expired -- you'll probably need to log in.");
+            }
+        }
+        self.access.secret()
+    }
 }
 
 
 #[derive(Debug, Serialize)]
 enum GitOrigin {
+    #[serde(rename = "github")]
     Github {
         repo: String,
     },
@@ -104,7 +115,6 @@ impl GitOrigin {
             .ok_or_else(|| format!("Could not parse remote \"{:?}\" to an origin (only github ssh is recognized currently)", remote))
     }
 }
-
 
 
 fn not_found(stream: &mut TcpStream) {
@@ -194,17 +204,17 @@ fn listen_for<T, F>(handler: F, status: &str, response: String, listener: &TcpLi
 
 fn oauth() -> StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType> {
     // bind early so we can bail if the port is not available
-    let listener = TcpListener::bind(&format!("{}:{}", HOST, PORT))
-        .unwrap_or_else(|e| panic!("Could not bind to port {} for oauth redirect listener: {:?}", PORT, e));
+    let listener = TcpListener::bind(&format!("{}:{}", LOCAL_AUTH_HOST, LOCAL_AUTH_PORT))
+        .unwrap_or_else(|e| panic!("Could not bind to port {} for oauth redirect listener: {:?}", LOCAL_AUTH_PORT, e));
 
     let client =
         BasicClient::new(
             ClientId::new("commit--cli".to_string()),
             None,
-            AuthUrl::new("http://localhost:5000/oauth/auth".to_string()).expect("auth url"),
-            Some(TokenUrl::new("http://localhost:5000/oauth/token".to_string()).expect("token url"))
+            AuthUrl::new(format!("{}/oauth/auth", COMMIT_BLOG_HOST)).expect("auth url"),
+            Some(TokenUrl::new(format!("{}/oauth/token", COMMIT_BLOG_HOST)).expect("token url"))
         )
-        .set_redirect_uri(RedirectUrl::new(format!("http://{}:{}/oauth/authorized", HOST, PORT)).expect("redirect url"));
+        .set_redirect_uri(RedirectUrl::new(format!("http://{}:{}/oauth/authorized", LOCAL_AUTH_HOST, LOCAL_AUTH_PORT)).expect("redirect url"));
 
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
@@ -245,22 +255,12 @@ fn oauth() -> StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType> {
 }
 
 
-#[derive(Debug, Serialize)]
-struct PostPayload<'a> {
-    commit: &'a str,
-    origin: GitOrigin,
-}
-
-
 fn post(commit: Commit, origin: GitOrigin, token: StoredToken) {
-    use std::collections::HashMap;
-    println!("it was {:?} in the {:?} with the {:?}", commit, origin, token);
-
     let client = reqwest::blocking::Client::new();
-    let resp = client.post("http://localhost:5000/api/blog")
+    let resp = client.put(&format!("{}/api/blog/{}", COMMIT_BLOG_HOST, commit.id()))
         .header(header::USER_AGENT, "commit--cli hacky test version")
-        .bearer_auth(token.access.secret())
-        .json(&PostPayload { commit: &commit.id().to_string(), origin })
+        .bearer_auth(token.to_bearer())
+        .json(&origin)
         .send()
         .expect("to send ok");
 
@@ -278,11 +278,63 @@ fn post(commit: Commit, origin: GitOrigin, token: StoredToken) {
     }
 }
 
+fn unpost(commit: Commit, origin: GitOrigin, token: StoredToken) {
+    let client = reqwest::blocking::Client::new();
+    let resp = client.delete(&format!("{}/api/blog/{}", COMMIT_BLOG_HOST, commit.id()))
+        .header(header::USER_AGENT, "commit--cli hacky test version")
+        .bearer_auth(token.to_bearer())
+        .json(&origin)
+        .send()
+        .expect("to send ok");
+
+    match resp.status() {
+        code if code.is_success() =>  {
+            println!("ok, deleted");
+        },
+        StatusCode::BAD_REQUEST => {
+            eprintln!("Failed to unpost: {:?}", resp.text());
+        },
+        otherwise => {
+            panic!("Got unexpected non-success response status: {:?}", otherwise)
+        }
+    }
+}
+
+fn get_token(entry: Entry) -> StoredToken {
+    let stored = match entry.get_password() {
+        Ok(s) => s,
+        Err(KeyringError::NoEntry) => panic!("commit--blog auth not found -- maybe log in first"),
+        Err(e) => panic!("error getting token: {:?}", e),
+    };
+    serde_json::from_str(&stored).expect("parse existing token")
+}
+
+
+fn get_commit(repo: &Repository, git_ref: Option<String>) -> Result<Commit, String> {
+    repo.revparse_single(&git_ref.unwrap_or_else(|| "@".to_string()))
+        .and_then(|obj| obj.peel_to_commit())
+        .map_err(|e| e.message().to_owned())
+}
+
+
+fn get_likely_origin(repo: &Repository) -> Option<GitOrigin> {
+    let mut origin = None;
+    for remote in repo.remotes().unwrap().iter() {
+        let details = repo.find_remote(remote.unwrap()).unwrap();
+        let url = details.url().unwrap();
+        match GitOrigin::parse(url) {
+            Ok(o) => { origin = Some(o) },
+            Err(err) => eprintln!("ignoring origin: {:?}", err),
+        }
+    }
+    origin
+}
+
 
 fn main() {
+    let entry = Entry::new("commit--blog", "auth");
     match Blog::from_args() {
         Blog::Login => {
-            let entry = Entry::new("commit--blog", "auth");
             if let Ok(json_token) = entry.get_password() {
                 let stored: StoredToken = serde_json::from_str(&json_token).expect("parses existing token");
                 println!("tok: {:?}", stored);
@@ -302,45 +354,24 @@ fn main() {
             }
         },
         Blog::Logout => {
-            let entry = Entry::new("commit--blog", "auth");
             match entry.delete_password() {
                 Ok(()) => println!("ok password deleted"),
                 Err(err) => eprintln!("error deleting pw: {:?}", err),
             }
         },
         Blog::Post { git_ref } => {
-            let entry = Entry::new("commit--blog", "auth");
-            let stored = match entry.get_password() {
-                Ok(s) => s,
-                Err(KeyringError::NoEntry) => panic!("commit--blog auth not found -- maybe log in first"),
-                Err(e) => panic!("{:?}", e),
-            };
-            let token: StoredToken = serde_json::from_str(&stored).expect("parse existing token");
-            if let Some(exp) = token.expires {
-                if now().as_secs() >= exp {
-                    panic!("oh no, access token might be expired");
-                }
-            }
-
+            let token = get_token(entry);
             let repo = Repository::discover(env::current_dir().unwrap()).expect("open current repo");
-            let local_obj = repo.revparse_single(&git_ref.unwrap_or_else(|| "HEAD".to_string())).expect("to find the git fref");
-            let commit = local_obj.peel_to_commit().expect("ref resolves to a commit");
-            let mut origin = None;
-            for remote in repo.remotes().unwrap().iter() {
-                let details = repo.find_remote(remote.unwrap()).unwrap();
-                let url = details.url().unwrap();
-                match GitOrigin::parse(url) {
-                    Ok(o) => { origin = Some(o) },
-                    Err(err) => eprintln!("ignoring origin: {:?}", err),
-                }
-            }
-            let origin = origin.expect("origin to be found");
-
-            post(commit, origin, token);
+            let commit = get_commit(&repo, git_ref).expect("to find commit");
+            let origin = get_likely_origin(&repo).expect("origin to be found");
+            post(commit, origin, token)
         },
         Blog::Unpost { git_ref } => {
-            eprintln!("todo: command for unpost. git ref: {:?}", git_ref);
-            unimplemented!()
+            let token = get_token(entry);
+            let repo = Repository::discover(env::current_dir().unwrap()).expect("open current repo");
+            let commit = get_commit(&repo, git_ref).expect("to find commit");
+            let origin = get_likely_origin(&repo).expect("origin to be found");
+            unpost(commit, origin, token)
         },
     }
 }
