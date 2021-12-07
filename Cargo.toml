@@ -1,6 +1,13 @@
 [package]
 name = "commit--blog"
 version = "0.1.0"
+license = "AGPL"
+description = "Command-line tool for publishing git commits to commit--blog.com"
+readme = "readme.md"
+homepage = "https://commit--blog.com/cli"
+repository = "https://github.com/uniphil/commit--cli"
+keywords = ["cli", "git", "commit", "blog",  "commit--blog"]
+categories = ["command-line-utilities"]
 edition = "2021"
 
 [dependencies]
