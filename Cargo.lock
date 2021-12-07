@@ -706,8 +706,9 @@ dependencies = [
 
 [[package]]
 name = "keyring"
-version = "0.10.4"
-source = "git+https://github.com/hwchen/keyring-rs?tag=v1.0.0rc1#3aad54daffbc32d1bcb2ca5a420cb91d079827d7"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dadaf714ce3f9d7e1c8c05aa8d070eb6e9ddd40cd7be3aca2f21fa372405104"
 dependencies = [
  "byteorder",
  "secret-service",
