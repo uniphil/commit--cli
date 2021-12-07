@@ -3,7 +3,7 @@
 
 use anyhow::Context;
 use git2::{Commit, Repository};
-use httparse::{Error::TooManyHeaders, Request, Result as HttpResult, EMPTY_HEADER};
+use httparse::Request;
 use keyring::{Entry, Error as KeyringError};
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::http_client;
@@ -17,10 +17,11 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+
 use std::time::{Duration, SystemTime};
 use structopt::StructOpt;
+
+mod local_listener;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "commit--blog")]
@@ -43,8 +44,7 @@ enum Blog {
 
 const COMMIT_BLOG_HOST: &str = "http://localhost:5000";
 const TOKEN_STORE_VERSION: &str = "0.1";
-const LOCAL_AUTH_HOST: &str = "localhost";
-const LOCAL_AUTH_PORT: u32 = 33205;
+const LOCAL_AUTH_PORT: u16 = 33205;
 
 fn now() -> Duration {
     SystemTime::now()
@@ -98,27 +98,14 @@ impl GitOrigin {
     }
 }
 
-fn not_found(stream: &mut TcpStream) -> Result<(), std::io::Error> {
-    let response = "HTTP/1.1 404 NOT FOUND\r\n\r\n";
-    stream.write_all(response.as_bytes())?;
-    stream.flush()?;
-    Ok(())
-}
-
-#[derive(Debug)]
-enum Heard<T> {
-    Ya(T),
-    Ohno(String),
-}
-
-fn handle_auth_redirect(req: Request) -> Heard<(String, String)> {
+fn for_auth_redirect(req: &Request) -> Option<(String, String)> {
     let path = match (req.method, req.path) {
         (Some("GET"), Some(p)) if p.starts_with("/oauth/authorized") => p,
-        (m, p) => return Heard::Ohno(format!("Ignoring unexpected request: {:?} {:?}", m, p)),
+        _ => return None,
     };
     let url = match Url::parse("http://x.y").unwrap().join(path) {
         Ok(u) => u,
-        Err(e) => return Heard::Ohno(format!("Could not parse path at GET {:?}: {:?}", path, e)),
+        Err(_) => return None,
     };
     let (mut code, mut state) = (None, None);
     for (ref k, ref v) in url.query_pairs() {
@@ -129,78 +116,27 @@ fn handle_auth_redirect(req: Request) -> Heard<(String, String)> {
         }
     }
     match (&code, &state) {
-        (Some(c), Some(s)) => Heard::Ya((c.to_owned(), s.to_owned())),
-        _ => Heard::Ohno(format!(
-            "could not find all params in query: code={:?} state={:?}",
-            code, state
-        )),
-    }
-}
-
-fn handle_token_followup(req: Request) -> Heard<()> {
-    match (req.method, req.path) {
-        (Some("GET"), Some("/token-status")) => Heard::Ya(()),
-        (m, p) => Heard::Ohno(format!("Ignoring unexpected request: {:?} {:?}", m, p)),
-    }
-}
-
-fn listen_for<T, F>(
-    handler: F,
-    status: &str,
-    response: String,
-    listener: &TcpListener,
-) -> Result<T, std::io::Error>
-where
-    F: Fn(Request) -> Heard<T>,
-{
-    // terrible terrible hacky lil local http server
-    for s in listener.incoming() {
-        let mut stream = s?;
-        let mut buffer = [0; 1024];
-        stream.read_exact(&mut buffer)?;
-
-        let mut req = Request::new(&mut [EMPTY_HEADER; 0]);
-
-        match req.parse(&buffer) {
-            HttpResult::Ok(_) => {}
-            HttpResult::Err(TooManyHeaders) => {} // we allocated zero headers, so this is expected
-            HttpResult::Err(e) => {
-                eprintln!("Ignoring request that could not be parsed: {:?}", e);
-                not_found(&mut stream)?;
-                continue;
-            }
-        };
-
-        match handler(req) {
-            Heard::Ya(stuff) => {
-                let resp = format!(
-                    "HTTP/1.1 {}\r\nContent-Length: {}\r\n\r\n{}",
-                    status,
-                    response.len(),
-                    response
-                );
-                stream.write_all(resp.as_bytes())?;
-                stream.flush()?;
-                return Ok(stuff);
-            }
-            Heard::Ohno(msg) => {
-                eprintln!("{}", msg);
-                not_found(&mut stream)?;
-            }
+        (Some(c), Some(s)) => Some((c.to_owned(), s.to_owned())),
+        _ => {
+            eprintln!(
+                "could not find all params in query: code={:?} state={:?}",
+                code, state
+            );
+            None
         }
     }
-    unreachable!()
+}
+
+fn for_token_followup(req: &Request) -> Option<()> {
+    match (req.method, req.path) {
+        (Some("GET"), Some("/token-status")) => Some(()),
+        _ => None,
+    }
 }
 
 fn oauth() -> Result<StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>, anyhow::Error> {
     // bind early so we can bail if the port is not available
-    let listener = TcpListener::bind(&format!("{}:{}", LOCAL_AUTH_HOST, LOCAL_AUTH_PORT))
-        .unwrap_or_else(|e| {
-            panic!(
-                "Could not bind to port {} for oauth redirect listener: {:?}",
-                LOCAL_AUTH_PORT, e
-            )
-        });
+    let ll = local_listener::LocalListener::new(LOCAL_AUTH_PORT)?;
 
     let client = BasicClient::new(
         ClientId::new("commit--cli".to_string()),
@@ -209,8 +145,8 @@ fn oauth() -> Result<StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType
         Some(TokenUrl::new(format!("{}/oauth/token", COMMIT_BLOG_HOST)).expect("token url")),
     )
     .set_redirect_uri(RedirectUrl::new(format!(
-        "http://{}:{}/oauth/authorized",
-        LOCAL_AUTH_HOST, LOCAL_AUTH_PORT
+        "http://{}/oauth/authorized",
+        ll.addr()?
     ))?);
 
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
@@ -231,14 +167,15 @@ fn oauth() -> Result<StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType
     }
 
     println!("waiting for auth redirect...");
-    let (code, state) = listen_for(
-        handle_auth_redirect,
-        "200 OK",
-        include_str!("authorized.html").to_string(),
-        &listener,
-    )?;
 
-    assert_eq!(&state, csrf_token.secret(), "csrf check");
+    let (ll, (code, state)) = ll.listen(for_auth_redirect)?;
+
+    if &state != csrf_token.secret() {
+        ll.reply("400 BAD REQUESTS", "400 bad request")?;
+        anyhow::bail!("CSRF check failed during token authentication.")
+    }
+
+    let ll = ll.reply("200 OK", include_str!("authorized.html"))?;
 
     let token = client
         .exchange_code(AuthorizationCode::new(code))
@@ -246,12 +183,10 @@ fn oauth() -> Result<StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType
         .add_extra_param("client_id", "commit--cli") // ??? seems like this wasn't sending??
         .request(http_client)?;
 
-    listen_for(
-        handle_token_followup,
-        "200 OK",
-        "got token".to_string(),
-        &listener,
-    )?;
+    ll.listen(for_token_followup)?
+        .0
+        .reply("200 OK", "got token")?;
+
     Ok(token)
 }
 
