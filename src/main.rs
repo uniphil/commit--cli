@@ -108,7 +108,7 @@ impl GitOrigin {
             .strip_prefix("git@github.com:")
             .and_then(|r| r.strip_suffix(".git"))
             .map(|repo| GitOrigin::Github { repo: repo.to_owned() })
-            .with_context(|| format!("Could not parse remote \"{:?}\" to an origin (only github ssh is recognized currently)", remote))
+            .with_context(|| format!("Could not parse remote \"{}\" to an origin (only github ssh is recognized currently)", remote))
     }
 }
 
@@ -138,7 +138,7 @@ fn handle_auth_redirect(req: Request) -> Heard<(String, String)> {
     let url = match Url::parse("http://x.y").unwrap().join(path) {
         Ok(u) => u,
         Err(e) => {
-            return Heard::Ohno(format!("could not parse path at GET {:?}: {:?}", path, e))
+            return Heard::Ohno(format!("Could not parse path at GET {:?}: {:?}", path, e))
         }
     };
     let (mut code, mut state) = (None, None);
@@ -258,7 +258,7 @@ fn post(commit: Commit, origin: GitOrigin, token: StoredToken) -> Result<(), req
             println!("{:#?}", data);
         },
         StatusCode::BAD_REQUEST => {
-            eprintln!("Failed to post: {:?}", resp.text());
+            eprintln!("Failed to post: {:?}", resp.text()?);
         },
         otherwise => {
             panic!("Got unexpected non-success response status: {:?}", otherwise)
@@ -305,17 +305,25 @@ fn get_commit(repo: &Repository, git_ref: Option<String>) -> Result<Commit, git2
 }
 
 
-fn get_likely_origin(repo: &Repository) -> Option<GitOrigin> {
+fn get_likely_origin(repo: &Repository) -> Result<GitOrigin, anyhow::Error> {
     let mut origin = None;
-    for remote in repo.remotes().unwrap().iter() {
-        let details = repo.find_remote(remote.unwrap()).unwrap();
+    for remote in repo.remotes()?.iter() {
+        let details = repo.find_remote(remote.unwrap())?;
         let url = details.url().unwrap();
-        match GitOrigin::parse(url) {
-            Ok(o) => { origin = Some(o) },
-            Err(err) => eprintln!("ignoring origin: {:?}", err),
+        match (GitOrigin::parse(url), &origin) {
+            (Ok(o), None) => { origin = Some(o) },
+            (Ok(o), Some(_)) => {
+                eprintln!("Warning: multiple origins found. This is not handled yet -- using first found: {:?}", o);
+            },
+            (Err(e), _) => {
+                eprintln!("Warning: ignorning unrecognized origin for url \"{}\": {:?}", url, e);
+            }
+        }
+        if let Ok(o) = GitOrigin::parse(url) {
+            origin = Some(o);
         }
     }
-    origin
+    origin.context("No recognized git origin was found")
 }
 
 
@@ -340,6 +348,7 @@ fn main() -> Result<(), anyhow::Error> {
             }
         },
         Blog::Logout => {
+            // TODO: send a request to revoke the token too
             entry.delete_password()?;
             println!("access token deleted.")
         },
@@ -347,14 +356,14 @@ fn main() -> Result<(), anyhow::Error> {
             let token = get_token(entry);
             let repo = Repository::discover(env::current_dir()?)?;
             let commit = get_commit(&repo, git_ref)?;
-            let origin = get_likely_origin(&repo).expect("origin to be found");
+            let origin = get_likely_origin(&repo)?;
             post(commit, origin, token)?
         },
         Blog::Unpost { git_ref } => {
             let token = get_token(entry);
             let repo = Repository::discover(env::current_dir()?)?;
             let commit = get_commit(&repo, git_ref)?;
-            let origin = get_likely_origin(&repo).expect("origin to be found");
+            let origin = get_likely_origin(&repo)?;
             unpost(commit, origin, token)?
         },
     }
