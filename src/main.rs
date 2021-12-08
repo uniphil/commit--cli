@@ -32,8 +32,6 @@ enum Blog {
     },
 }
 
-const COMMIT_BLOG_HOST: &str = "http://localhost:5000";
-
 #[derive(Debug, Serialize)]
 enum GitOrigin {
     #[serde(rename = "github")]
@@ -50,10 +48,15 @@ impl GitOrigin {
     }
 }
 
-fn post(commit: Commit, origin: GitOrigin, token: auth::StoredToken) -> Result<(), reqwest::Error> {
+fn post(
+    commit: Commit,
+    origin: GitOrigin,
+    token: auth::StoredToken,
+    blog_host: &str,
+) -> Result<(), reqwest::Error> {
     let client = reqwest::blocking::Client::new();
     let resp = client
-        .put(&format!("{}/api/blog/{}", COMMIT_BLOG_HOST, commit.id()))
+        .put(&format!("{}/api/blog/{}", blog_host, commit.id()))
         .header(header::USER_AGENT, "commit--cli hacky test version")
         .bearer_auth(token.to_bearer())
         .json(&origin)
@@ -81,10 +84,11 @@ fn unpost(
     commit: Commit,
     origin: GitOrigin,
     token: auth::StoredToken,
+    blog_host: &str,
 ) -> Result<(), reqwest::Error> {
     let client = reqwest::blocking::Client::new();
     let resp = client
-        .delete(&format!("{}/api/blog/{}", COMMIT_BLOG_HOST, commit.id()))
+        .delete(&format!("{}/api/blog/{}", blog_host, commit.id()))
         .header(header::USER_AGENT, "commit--cli hacky test version")
         .bearer_auth(token.to_bearer())
         .json(&origin)
@@ -137,13 +141,15 @@ fn get_likely_origin(repo: &Repository) -> Result<GitOrigin, anyhow::Error> {
 }
 
 fn main() -> Result<(), anyhow::Error> {
-    let entry = Entry::new("commit--blog", "auth");
+    let commitblog_host =
+        env::var("COMMITBLOG_HOST").unwrap_or_else(|_| "https://commit--blog.com".to_string());
+    let entry = Entry::new(&commitblog_host, "commit--cli");
     match Blog::from_args() {
         Blog::Login => {
             if let Some(token) = auth::get_token(&entry)? {
                 println!("Already logged in: found {}", token.info());
             } else {
-                let raw_auth = auth::oauth()?;
+                let raw_auth = auth::oauth(&commitblog_host)?;
                 let token = auth::StoredToken::from_token_response(raw_auth);
                 let s = serde_json::to_string(&token)?;
                 entry.set_password(&s)?;
@@ -160,14 +166,14 @@ fn main() -> Result<(), anyhow::Error> {
             let repo = Repository::discover(env::current_dir()?)?;
             let commit = get_commit(&repo, git_ref)?;
             let origin = get_likely_origin(&repo)?;
-            post(commit, origin, token)?
+            post(commit, origin, token, &commitblog_host)?
         }
         Blog::Unpost { git_ref } => {
             let token = auth::get_token(&entry)?.context("Log in to unpost")?;
             let repo = Repository::discover(env::current_dir()?)?;
             let commit = get_commit(&repo, git_ref)?;
             let origin = get_likely_origin(&repo)?;
-            unpost(commit, origin, token)?
+            unpost(commit, origin, token, &commitblog_host)?
         }
     }
     Ok(())

@@ -204,7 +204,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "commit--blog"
+name = "commit--cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",

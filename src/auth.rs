@@ -1,6 +1,6 @@
 #![deny(non_snake_case)]
 
-use crate::{local_listener, COMMIT_BLOG_HOST};
+use crate::local_listener;
 use anyhow::Context;
 use httparse::Request;
 use keyring::{Entry, Error as KeyringError};
@@ -90,16 +90,17 @@ fn for_token_followup(req: &Request) -> Option<()> {
     }
 }
 
-pub fn oauth() -> Result<StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>, anyhow::Error>
-{
+pub fn oauth(
+    blog_host: &str,
+) -> Result<StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>, anyhow::Error> {
     // bind early so we can bail if the port is not available
     let ll = local_listener::LocalListener::new(LOCAL_AUTH_PORT)?;
 
     let client = BasicClient::new(
         ClientId::new("commit--cli".to_string()),
         None,
-        AuthUrl::new(format!("{}/oauth/auth", COMMIT_BLOG_HOST)).expect("auth url"),
-        Some(TokenUrl::new(format!("{}/oauth/token", COMMIT_BLOG_HOST)).expect("token url")),
+        AuthUrl::new(format!("{}/oauth/auth", blog_host)).expect("auth url"),
+        Some(TokenUrl::new(format!("{}/oauth/token", blog_host)).expect("token url")),
     )
     .set_redirect_uri(RedirectUrl::new(format!(
         "http://{}/oauth/authorized",
