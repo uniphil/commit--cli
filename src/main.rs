@@ -53,7 +53,7 @@ fn post(
     origin: GitOrigin,
     token: auth::StoredToken,
     blog_host: &str,
-) -> Result<(), reqwest::Error> {
+) -> Result<(), anyhow::Error> {
     let client = reqwest::blocking::Client::new();
     let resp = client
         .put(&format!("{}/api/blog/{}", blog_host, commit.id()))
@@ -71,7 +71,7 @@ fn post(
             eprintln!("Failed to post: {:?}", resp.text()?);
         }
         otherwise => {
-            panic!(
+            anyhow::bail!(
                 "Got unexpected non-success response status: {:?}",
                 otherwise
             )
@@ -85,7 +85,7 @@ fn unpost(
     origin: GitOrigin,
     token: auth::StoredToken,
     blog_host: &str,
-) -> Result<(), reqwest::Error> {
+) -> Result<(), anyhow::Error> {
     let client = reqwest::blocking::Client::new();
     let resp = client
         .delete(&format!("{}/api/blog/{}", blog_host, commit.id()))
@@ -102,7 +102,7 @@ fn unpost(
             eprintln!("Failed to unpost: {:?}", resp.text());
         }
         otherwise => {
-            panic!(
+            anyhow::bail!(
                 "Got unexpected non-success response status: {:?}",
                 otherwise
             )
