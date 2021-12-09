@@ -19,7 +19,7 @@ anyhow = "1.0"
 git2 = "0.13"
 httparse = "1.5"
 keyring = "1.0"
-oauth2 = "4.1"
+oauth2 = { git = "https://github.com/uniphil/oauth2-rs", branch = "allow-insecure-revocation-url" }
 reqwest = { version =  "0.11", features = ["blocking", "json"] }
 serde = "1.0"
 serde_json = "1.0"

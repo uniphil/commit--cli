@@ -8,8 +8,8 @@ use oauth2::basic::BasicClient;
 use oauth2::reqwest::http_client;
 use oauth2::{
     basic::BasicTokenType, url::Url, AccessToken, AuthUrl, AuthorizationCode, ClientId, CsrfToken,
-    EmptyExtraTokenFields, PkceCodeChallenge, RedirectUrl, Scope, StandardTokenResponse,
-    TokenResponse, TokenUrl,
+    EmptyExtraTokenFields, PkceCodeChallenge, RedirectUrl, RevocationUrl, Scope,
+    StandardRevocableToken, StandardTokenResponse, TokenResponse, TokenUrl,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -99,8 +99,8 @@ pub fn oauth(
     let client = BasicClient::new(
         ClientId::new("commit--cli".to_string()),
         None,
-        AuthUrl::new(format!("{}/oauth/auth", blog_host)).expect("auth url"),
-        Some(TokenUrl::new(format!("{}/oauth/token", blog_host)).expect("token url")),
+        AuthUrl::new(format!("{}/oauth/auth", blog_host))?,
+        Some(TokenUrl::new(format!("{}/oauth/token", blog_host))?),
     )
     .set_redirect_uri(RedirectUrl::new(format!(
         "http://{}/oauth/authorized",
@@ -161,4 +161,18 @@ pub fn get_token(entry: &Entry) -> Result<Option<StoredToken>, anyhow::Error> {
         }
     }
     Ok(Some(token))
+}
+
+pub fn revoke(token: StoredToken, blog_host: &str) -> Result<(), anyhow::Error> {
+    BasicClient::new(
+        ClientId::new("commit--cli".to_string()),
+        None,
+        AuthUrl::new(format!("{}/oauth/auth", blog_host)).expect("auth url"),
+        Some(TokenUrl::new(format!("{}/oauth/token", blog_host))?),
+    )
+    .set_revocation_uri(RevocationUrl::new(format!("{}/oauth/revoke", blog_host))?)
+    .revoke_token_with_unchecked_url(StandardRevocableToken::AccessToken(token.access))?
+    .add_extra_param("client_id", "commit--cli") // ??? seems like this wasn't sending??
+    .request(http_client)?;
+    Ok(())
 }

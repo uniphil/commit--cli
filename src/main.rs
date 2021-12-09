@@ -118,6 +118,7 @@ fn main() -> Result<(), anyhow::Error> {
     match Blog::from_args() {
         Blog::Login { delete: false } => {
             if let Some(token) = auth::get_token(&entry)? {
+                // TODO: send an auth validation request to the commitblog host
                 println!("Already logged in: found {}", token.info());
             } else {
                 let raw_auth = auth::oauth(&commitblog_host)?;
@@ -128,9 +129,13 @@ fn main() -> Result<(), anyhow::Error> {
             }
         }
         Blog::Login { delete: true } => {
-            // TODO: send a request to revoke the token too
-            entry.delete_password()?;
-            println!("access token deleted.")
+            if let Some(token) = auth::get_token(&entry)? {
+                auth::revoke(token, &commitblog_host)?;
+                entry.delete_password()?;
+                println!("Access token revoked and deleted.")
+            } else {
+                println!("No access token found.");
+            }
         }
         Blog::Post { git_ref, delete } => {
             let token = auth::get_token(&entry)?.context("Log in to post")?;

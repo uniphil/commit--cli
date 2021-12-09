@@ -956,8 +956,7 @@ dependencies = [
 [[package]]
 name = "oauth2"
 version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80e47cfc4c0a1a519d9a025ebfbac3a2439d1b5cdf397d72dcb79b11d9920dab"
+source = "git+https://github.com/uniphil/oauth2-rs?branch=allow-insecure-revocation-url#bf49470d61e33f685289d1a0ce73143832bacfbf"
 dependencies = [
  "base64",
  "chrono",
