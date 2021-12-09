@@ -4,7 +4,7 @@
 use anyhow::Context;
 use git2::{Commit, Repository};
 use keyring::Entry;
-use reqwest::{header, StatusCode};
+use reqwest::header;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
@@ -16,15 +16,17 @@ mod local_listener;
 #[derive(Debug, StructOpt)]
 #[structopt(name = "commit--blog")]
 enum Blog {
-    Login,
-    Logout,
-    Post {
-        /// A reference to identify the commit, like its hash or a tag.
-        /// Defaults to the latest commit on the current branch.
-        #[structopt(name = "ref")]
-        git_ref: Option<String>,
+    /// Authorize commit--cli to manage commit--blog posts for your account
+    Login {
+        /// Delete the cli's access token, effectively revoking cli access
+        #[structopt(short, long)]
+        delete: bool,
     },
-    Unpost {
+    /// Publish a commit as a commit--blog post!
+    Post {
+        /// Unpost/delete a commit blogpost that has already been posted.
+        #[structopt(short, long)]
+        delete: bool,
         /// A reference to identify the commit, like its hash or a tag.
         /// Defaults to the latest commit on the current branch.
         #[structopt(name = "ref")]
@@ -52,61 +54,30 @@ fn post(
     commit: Commit,
     origin: GitOrigin,
     token: auth::StoredToken,
+    delete: bool,
     blog_host: &str,
 ) -> Result<(), anyhow::Error> {
     let client = reqwest::blocking::Client::new();
-    let resp = client
-        .put(&format!("{}/api/blog/{}", blog_host, commit.id()))
+    let route = format!("{}/api/blog/{}", blog_host, commit.id());
+    let action = if delete {
+        client.delete(&route)
+    } else {
+        client.put(&route)
+    };
+    let resp = action
         .header(header::USER_AGENT, "commit--cli hacky test version")
         .bearer_auth(token.to_bearer())
         .json(&origin)
         .send()?;
 
-    match resp.status() {
-        code if code.is_success() => {
-            let data = resp.json::<HashMap<String, String>>().unwrap();
-            println!("{:#?}", data);
-        }
-        StatusCode::BAD_REQUEST => {
-            eprintln!("Failed to post: {:?}", resp.text()?);
-        }
-        otherwise => {
-            anyhow::bail!(
-                "Got unexpected non-success response status: {:?}",
-                otherwise
-            )
-        }
+    if !resp.status().is_success() {
+        anyhow::bail!("{}: {}", resp.status(), resp.text()?)
     }
-    Ok(())
-}
-
-fn unpost(
-    commit: Commit,
-    origin: GitOrigin,
-    token: auth::StoredToken,
-    blog_host: &str,
-) -> Result<(), anyhow::Error> {
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .delete(&format!("{}/api/blog/{}", blog_host, commit.id()))
-        .header(header::USER_AGENT, "commit--cli hacky test version")
-        .bearer_auth(token.to_bearer())
-        .json(&origin)
-        .send()?;
-
-    match resp.status() {
-        code if code.is_success() => {
-            println!("ok, unposted.");
-        }
-        StatusCode::BAD_REQUEST => {
-            eprintln!("Failed to unpost: {:?}", resp.text());
-        }
-        otherwise => {
-            anyhow::bail!(
-                "Got unexpected non-success response status: {:?}",
-                otherwise
-            )
-        }
+    if delete {
+        println!("post deleted.");
+    } else {
+        let data = resp.json::<HashMap<String, String>>()?;
+        println!("{:#?}", data);
     }
     Ok(())
 }
@@ -145,7 +116,7 @@ fn main() -> Result<(), anyhow::Error> {
         env::var("COMMITBLOG_HOST").unwrap_or_else(|_| "https://commit--blog.com".to_string());
     let entry = Entry::new(&commitblog_host, "commit--cli");
     match Blog::from_args() {
-        Blog::Login => {
+        Blog::Login { delete: false } => {
             if let Some(token) = auth::get_token(&entry)? {
                 println!("Already logged in: found {}", token.info());
             } else {
@@ -156,24 +127,17 @@ fn main() -> Result<(), anyhow::Error> {
                 println!("Access token saved.")
             }
         }
-        Blog::Logout => {
+        Blog::Login { delete: true } => {
             // TODO: send a request to revoke the token too
             entry.delete_password()?;
             println!("access token deleted.")
         }
-        Blog::Post { git_ref } => {
+        Blog::Post { git_ref, delete } => {
             let token = auth::get_token(&entry)?.context("Log in to post")?;
             let repo = Repository::discover(env::current_dir()?)?;
             let commit = get_commit(&repo, git_ref)?;
             let origin = get_likely_origin(&repo)?;
-            post(commit, origin, token, &commitblog_host)?
-        }
-        Blog::Unpost { git_ref } => {
-            let token = auth::get_token(&entry)?.context("Log in to unpost")?;
-            let repo = Repository::discover(env::current_dir()?)?;
-            let commit = get_commit(&repo, git_ref)?;
-            let origin = get_likely_origin(&repo)?;
-            unpost(commit, origin, token, &commitblog_host)?
+            post(commit, origin, token, delete, &commitblog_host)?
         }
     }
     Ok(())
