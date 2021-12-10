@@ -4,7 +4,6 @@
 use anyhow::Context;
 use git2::{Commit, Repository};
 use keyring::Entry;
-use reqwest::header;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
@@ -57,26 +56,25 @@ fn post(
     delete: bool,
     blog_host: &str,
 ) -> Result<(), anyhow::Error> {
-    let client = reqwest::blocking::Client::new();
     let route = format!("{}/api/blog/{}", blog_host, commit.id());
     let action = if delete {
-        client.delete(&route)
+        ureq::delete(&route)
     } else {
-        client.put(&route)
+        ureq::put(&route)
     };
     let resp = action
-        .header(header::USER_AGENT, "commit--cli hacky test version")
-        .bearer_auth(token.to_bearer())
-        .json(&origin)
-        .send()?;
+        .set("User-Agent", "commit--cli hacky test version")
+        .set("Authorization", &format!("Bearer {}", token.to_bearer()))
+        .set("Content-Type", "application/json")
+        .send_string(&serde_json::to_string(&origin)?)?;
 
-    if !resp.status().is_success() {
-        anyhow::bail!("{}: {}", resp.status(), resp.text()?)
+    if resp.status() >= 300 {
+        anyhow::bail!("{}: {}", resp.status(), resp.into_string()?)
     }
     if delete {
         println!("post deleted.");
     } else {
-        let data = resp.json::<HashMap<String, String>>()?;
+        let data: HashMap<String, String> = serde_json::from_reader(resp.into_reader())?;
         println!("{:#?}", data);
     }
     Ok(())

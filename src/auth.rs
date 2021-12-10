@@ -5,7 +5,7 @@ use anyhow::Context;
 use httparse::Request;
 use keyring::{Entry, Error as KeyringError};
 use oauth2::basic::BasicClient;
-use oauth2::reqwest::http_client;
+use oauth2::ureq::http_client;
 use oauth2::{
     basic::BasicTokenType, url::Url, AccessToken, AuthUrl, AuthorizationCode, ClientId, CsrfToken,
     EmptyExtraTokenFields, PkceCodeChallenge, RedirectUrl, RevocationUrl, Scope,
