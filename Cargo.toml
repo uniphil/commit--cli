@@ -1,6 +1,6 @@
 [package]
 name = "commit--cli"
-version = "0.1.0"
+version = "0.2.0"
 license = "AGPL-3.0-or-later"
 description = "Command-line tool for publishing git commits to commit--blog.com"
 readme = "readme.md"
@@ -19,7 +19,7 @@ anyhow = "1.0"
 git2 = "0.13"
 httparse = "1.5"
 keyring = "1.0"
-oauth2 = { git = "https://github.com/uniphil/oauth2-rs", branch = "allow-insecure-revocation-url", default-features = false, features = ["ureq"] }
+oauth2 = { git = "https://github.com/uniphil/oauth2-rs", branch = "allow-insecure-revocation-url", version="4.1", default-features = false, features = ["ureq"] }
 ureq = { version = "2.3" }
 serde = "1.0"
 serde_json = "1.0"

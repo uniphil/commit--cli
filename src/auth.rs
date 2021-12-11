@@ -163,7 +163,7 @@ pub fn get_token(entry: &Entry) -> Result<Option<StoredToken>, anyhow::Error> {
     Ok(Some(token))
 }
 
-pub fn revoke(token: StoredToken, blog_host: &str) -> Result<(), anyhow::Error> {
+pub fn revoke(token: StoredToken, blog_host: &str) -> Result<bool, anyhow::Error> {
     let resp = BasicClient::new(
         ClientId::new("commit--cli".to_string()),
         None,
@@ -178,9 +178,9 @@ pub fn revoke(token: StoredToken, blog_host: &str) -> Result<(), anyhow::Error> 
     if let Err(RequestTokenError::Request(O2UreqError::Ureq(ref e))) = resp {
         if let ureq::Error::Status(404, _) = **e {
             eprintln!("Info: 404 token not found on server when trying to revoke.");
-            return Ok(());
+            return Ok(false);
         }
     }
     resp?;
-    Ok(())
+    Ok(true)
 }

@@ -128,9 +128,12 @@ fn main() -> Result<(), anyhow::Error> {
         }
         Blog::Login { delete: true } => {
             if let Some(token) = auth::get_token(&entry)? {
-                auth::revoke(token, &commitblog_host)?;
+                let revoked = !auth::revoke(token, &commitblog_host)?;
                 entry.delete_password()?;
-                println!("Access token revoked and deleted.")
+                println!(
+                    "Access token {}deleted.",
+                    if revoked { "revoked and " } else { "" }
+                );
             } else {
                 println!("No access token found.");
             }
