@@ -5,10 +5,10 @@ use anyhow::Context;
 use httparse::Request;
 use keyring::{Entry, Error as KeyringError};
 use oauth2::basic::BasicClient;
-use oauth2::ureq::http_client;
+use oauth2::ureq::{http_client, Error as O2UreqError};
 use oauth2::{
     basic::BasicTokenType, url::Url, AccessToken, AuthUrl, AuthorizationCode, ClientId, CsrfToken,
-    EmptyExtraTokenFields, PkceCodeChallenge, RedirectUrl, RevocationUrl, Scope,
+    EmptyExtraTokenFields, PkceCodeChallenge, RedirectUrl, RequestTokenError, RevocationUrl, Scope,
     StandardRevocableToken, StandardTokenResponse, TokenResponse, TokenUrl,
 };
 use serde::{Deserialize, Serialize};
@@ -164,7 +164,7 @@ pub fn get_token(entry: &Entry) -> Result<Option<StoredToken>, anyhow::Error> {
 }
 
 pub fn revoke(token: StoredToken, blog_host: &str) -> Result<(), anyhow::Error> {
-    BasicClient::new(
+    let resp = BasicClient::new(
         ClientId::new("commit--cli".to_string()),
         None,
         AuthUrl::new(format!("{}/oauth/auth", blog_host)).expect("auth url"),
@@ -173,6 +173,14 @@ pub fn revoke(token: StoredToken, blog_host: &str) -> Result<(), anyhow::Error> 
     .set_revocation_uri(RevocationUrl::new(format!("{}/oauth/revoke", blog_host))?)
     .revoke_token_with_unchecked_url(StandardRevocableToken::AccessToken(token.access))?
     .add_extra_param("client_id", "commit--cli") // ??? seems like this wasn't sending??
-    .request(http_client)?;
+    .request(http_client);
+
+    if let Err(RequestTokenError::Request(O2UreqError::Ureq(ref e))) = resp {
+        if let ureq::Error::Status(404, _) = **e {
+            eprintln!("Info: 404 token not found on server when trying to revoke.");
+            return Ok(());
+        }
+    }
+    resp?;
     Ok(())
 }
