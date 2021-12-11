@@ -19,9 +19,18 @@ anyhow = "1.0"
 git2 = "0.13"
 httparse = "1.5"
 keyring = "1.0"
-oauth2 = { git = "https://github.com/uniphil/oauth2-rs", branch = "allow-insecure-revocation-url", version="4.1", default-features = false, features = ["ureq"] }
 ureq = { version = "2.3" }
 serde = "1.0"
 serde_json = "1.0"
 structopt = "0.3"
 webbrowser = "0.5"
+
+[dependencies.oauth2]
+version="4.1"  # published version uses official cargo release (insecure flag unavailable)
+default-features = false
+features = ["ureq"]
+git = "https://github.com/uniphil/oauth2-rs"  # used locally -- flip `insecure` feature to enable the changes
+branch = "allow-insecure-revocation-url"
+
+[features]
+insecure = []

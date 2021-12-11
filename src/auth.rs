@@ -164,16 +164,25 @@ pub fn get_token(entry: &Entry) -> Result<Option<StoredToken>, anyhow::Error> {
 }
 
 pub fn revoke(token: StoredToken, blog_host: &str) -> Result<bool, anyhow::Error> {
-    let resp = BasicClient::new(
+    let token = StandardRevocableToken::AccessToken(token.access);
+
+    let client = BasicClient::new(
         ClientId::new("commit--cli".to_string()),
         None,
         AuthUrl::new(format!("{}/oauth/auth", blog_host)).expect("auth url"),
         Some(TokenUrl::new(format!("{}/oauth/token", blog_host))?),
     )
-    .set_revocation_uri(RevocationUrl::new(format!("{}/oauth/revoke", blog_host))?)
-    .revoke_token_with_unchecked_url(StandardRevocableToken::AccessToken(token.access))?
-    .add_extra_param("client_id", "commit--cli") // ??? seems like this wasn't sending??
-    .request(http_client);
+    .set_revocation_uri(RevocationUrl::new(format!("{}/oauth/revoke", blog_host))?);
+
+    #[cfg(feature = "insecure")]
+    let revoker = client.revoke_token_with_unchecked_url(token)?;
+
+    #[cfg(not(feature = "insecure"))]
+    let revoker = client.revoke_token(token)?;
+
+    let resp = revoker
+        .add_extra_param("client_id", "commit--cli") // ??? seems like this wasn't sending??
+        .request(http_client);
 
     if let Err(RequestTokenError::Request(O2UreqError::Ureq(ref e))) = resp {
         if let ureq::Error::Status(404, _) = **e {
